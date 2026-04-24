@@ -252,16 +252,3 @@ O `:Periodo` também armazena `horas_total`, que é a soma de todas as paralisa�
 **Narrativa Argumentativa** — o LLM cruza os dados quantitativos das paralisações com as comunicações formais associadas e gera um rascunho de argumentação de pleito: cronologia dos fatos, responsabilidades, horas acumuladas por motivo e referências documentais. O que levava semanas de levantamento manual passa a levar horas.
 
 **Alertas de Padrão** — quando um motivo de paralisação acumula recorrência acima de um threshold configurável, o sistema emite um alerta para que a equipe tome ação preventiva antes que o impacto se torne irreversível no cronograma.
-
----
-
-## Stack técnica
-
-| Componente | Tecnologia |
-|---|---|
-| Banco de grafos | Neo4j |
-| Temporalidade de arestas | Graphiti |
-| Deduplicação | Redis (hash SHA-256, TTL por obra) |
-| Classificação | LLM via Groq |
-| Ingestão inicial | CSV/Excel exportado do RDO Web |
-| Ingestão futura | API RDO Web |
