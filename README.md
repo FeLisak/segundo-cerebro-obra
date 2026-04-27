@@ -35,25 +35,20 @@ flowchart TD
                     E1["Obra — nome · cliente · fiscalizadora · fase · data_fim_contratual"]
                     E2["Atividade — tipo · data_inicio · data_fim · efetivo · status"]
                     E3["Comunicacao — tipo · data · destinatario · trecho_relevante · caminho_doc"]
-                    E5["Motivo — categoria · responsabilidade · recorrencia · horas_acumuladas"]
                     E2 -->|PERTENCE_A| E1
                     E3 -->|ASSOCIADA_A| E2
                 end
 
-                E4["PARALISACAO — categoria · horas · responsabilidade · data · status"]
+                E4["PARALISACAO — categoria · responsabilidade · horas · data_inicio · data_fim · status"]
 
-                E6["Periodo — tipo · data_inicio · data_fim · horas_total · count"]
-
-                E1 -->|TEM_PARALISACAO — horas · horas_acumuladas| E4
+                E1 -->|TEM_PARALISACAO — horas · horas_acumuladas_motivo| E4
                 E2 -->|IMPACTADA_POR| E4
                 E3 -->|REFERENCIA — trecho_relevante| E4
-                E5 -->|CLASSIFICA| E4
-                E4 -->|OCORREU_EM — valid_from · valid_until| E6
             end
 
             LLM -->|sim — cria no Paralisacao vinculado| KG
             LLM -->|nao afeta entidade existente| CRIAR
-            CRIAR -->|sim — nova atividade · motivo · comunicacao| KG
+            CRIAR -->|sim — nova atividade · comunicacao| KG
             CRIAR -->|nao ha nada aproveitavel| DESCARTE[["descartado"]]
             LLM <-->|consulta e atualiza| KG
         end
@@ -64,9 +59,9 @@ flowchart TD
 
     subgraph OUTPUT["OUTPUT"]
         direction LR
-        O1["Levantamento — paralisacoes por motivo · frequencia · horas por periodo"]
+        O1["Levantamento — paralisacoes por categoria · responsabilidade · horas"]
         O2["Narrativa Argumentativa — rascunho de pleito auditavel com referencias"]
-        O3["Alertas de Padrao — paralisacao recorrente detectada · acao preventiva"]
+        O3["Alertas de Padrao — categoria recorrente detectada · acao preventiva"]
     end
 
     FONTES --> P1
@@ -85,7 +80,7 @@ flowchart TD
 
     class F1,F2,F3 fonte
     class P1,P2 pipeline
-    class E1,E2,E3,E5,E6 entity
+    class E1,E2,E3 entity
     class E4 risco
     class O1,O2,O3 output
     class DESCARTE descarte
@@ -98,19 +93,17 @@ flowchart TD
 
 Obras de infraestrutura produzem dois tipos de dado que raramente se conversam: o dado **quantitativo** — horas de paralisação, efetivo alocado, atividades executadas, registrado no RDO Web — e o dado **qualitativo** — a carta enviada ao cliente naquela semana, a notificação sobre atraso de fornecimento, a ata onde o cliente assumiu responsabilidade por uma interferência.
 
-O valor não está em nenhum dos dois isoladamente. Está na conexão entre eles. Um Knowledge Graph representa essas conexões nativamente: ele sabe que a paralisação do dia X foi pelo motivo W, que esse motivo é de responsabilidade do cliente, que há uma carta de notificação associada com data anterior à paralisação, e que o impacto acumulado no mês justifica um pleito. Essa é a história da obra — e hoje ela existe apenas na memória dos gestores.
+O valor não está em nenhum dos dois isoladamente. Está na conexão entre eles. Um Knowledge Graph representa essas conexões nativamente: ele sabe que a paralisação do dia X foi pela categoria W, que a responsabilidade é do cliente, que há uma carta de notificação associada com data anterior à paralisação, e que o impacto acumulado no mês justifica um pleito. Essa é a história da obra — e hoje ela existe apenas na memória dos gestores.
 
 ---
 
 ## Fontes de dados
 
-O grafo é alimentado por três categorias de fontes, em ordem de prioridade de ingestão:
-
 **RDO Web** — extrato de atividades, registro de paralisações, controle de efetivo e fatos relevantes, exportados em CSV/Excel. É a fonte mais estruturada e o ponto de partida. A automação via API do RDO Web é avaliada em paralelo para eliminar o processo de exportação manual em versões futuras.
 
 **Comunicações contratuais** — cartas ao cliente, notificações formais e atas de reunião. São fontes textuais não estruturadas que, cruzadas com os dados do RDO Web, constroem o registro qualificado da obra: quem disse o quê, quando, sobre qual paralisação.
 
-**Contrato** — cláusulas contratuais, cronograma de entregas e medições. Contextualiza a responsabilidade de cada motivo de paralisação (Contratada / Cliente / Externo) e define os marcos temporais relevantes para o cálculo de impacto.
+**Contrato** — cláusulas contratuais, cronograma de entregas e medições. Contextualiza a responsabilidade de cada paralisação (Contratada / Cliente / Externo) e define os marcos temporais relevantes para o cálculo de impacto.
 
 ---
 
@@ -124,35 +117,36 @@ Todo registro ingerido passa por deduplicação via Redis. Um hash SHA-256 é ca
 
 ### Classificação com contexto do grafo
 
-O LLM e o Knowledge Graph rodam juntos, não em sequência. O modelo não classifica registros de forma genérica — ele classifica em relação ao contexto específico da obra, consultando o grafo em tempo real para saber quais atividades estão em andamento, quais motivos de paralisação já foram mapeados e quais comunicações existem no período.
+O LLM e o Knowledge Graph rodam juntos, não em sequência. O modelo não classifica registros de forma genérica — ele classifica em relação ao contexto específico da obra, consultando o grafo em tempo real para saber quais atividades estão em andamento, quais paralisações já foram mapeadas e quais comunicações existem no período.
 
 O fluxo de decisão tem duas etapas:
 
-**Etapa 1 — O registro afeta alguma entidade existente no grafo?** Se sim, o modelo extrai motivo, horas, responsabilidade e período, e cria um nó `:Paralisacao` já vinculado às entidades afetadas. Nenhum documento intermediário é salvo.
+**Etapa 1 — O registro afeta alguma entidade existente no grafo?** Se sim, o modelo extrai categoria, responsabilidade, horas e período, e cria um nó `:Paralisacao` já vinculado às entidades afetadas. Nenhum documento intermediário é salvo.
 
-**Etapa 2 — Se não afeta diretamente, dá para criar ou atualizar alguma entidade?** Uma nova atividade, um novo motivo de paralisação, uma comunicação ainda não mapeada — tudo isso enriquece o grafo mesmo sem gerar uma paralisação imediata. Só após essa segunda verificação, se não houver nada aproveitável, o registro é descartado.
+**Etapa 2 — Se não afeta diretamente, dá para criar ou atualizar alguma entidade?** Uma nova atividade ou uma comunicação ainda não mapeada enriquecem o grafo mesmo sem gerar uma paralisação imediata. Só após essa verificação, se não houver nada aproveitável, o registro é descartado.
 
 ---
 
 ## Entidades do Knowledge Graph
 
+O grafo tem quatro entidades. `:Motivo` e `:Periodo` foram intencionalmente removidos como nós — motivo vira campo direto em `:Paralisacao`, e período é calculado via query sobre as datas já existentes, sem necessidade de um nó dedicado.
+
 ### `:Paralisacao`
 
-O nó central de todo o grafo. Todo o sistema existe para identificar, classificar e quantificar paralisações e seu impacto contratual. Um nó `:Paralisacao` só é criado quando o LLM confirma relevância para alguma entidade da obra.
+O nó central do grafo. Carrega tudo que identifica o evento: o que aconteceu, quanto tempo durou, de quem é a responsabilidade e qual o impacto acumulado daquele tipo de paralisação na obra.
 
 | Campo | Descrição |
 |---|---|
 | `categoria` | `falta_material`, `climatico`, `aprovacao_cliente`, `interferencia_terceiros`, `decisao_cliente`, `outro` |
-| `horas` | Total de horas perdidas no evento |
 | `responsabilidade` | `Contratada`, `Cliente` ou `Externo` |
+| `horas` | Horas perdidas neste evento específico |
 | `data_inicio` | Início da paralisação |
 | `data_fim` | Fim da paralisação |
 | `status` | `aberto`, `documentado`, `pleiteado` |
-| `created_at` | Timestamp de criação no grafo |
 
 ### `:Obra`
 
-Entidade raiz do grafo. Todas as demais entidades pertencem a uma obra.
+Entidade raiz. Todas as atividades e paralisações pertencem a uma obra.
 
 | Campo | Descrição |
 |---|---|
@@ -161,12 +155,12 @@ Entidade raiz do grafo. Todas as demais entidades pertencem a uma obra.
 | `fiscalizadora` | Órgão fiscalizador quando aplicável |
 | `data_inicio_contratual` | Data de início prevista em contrato |
 | `data_fim_contratual` | Data de entrega prevista |
-| `fase_atual` | Fase contratual corrente |
+| `fase` | Fase contratual corrente |
 | `status` | `em_andamento`, `paralisada`, `concluida` |
 
 ### `:Atividade`
 
-Cada frente de trabalho em execução na obra. Paralisações são sempre vinculadas a uma ou mais atividades impactadas.
+Cada frente de trabalho em execução na obra. Paralisações são sempre vinculadas às atividades que impactaram.
 
 | Campo | Descrição |
 |---|---|
@@ -179,7 +173,7 @@ Cada frente de trabalho em execução na obra. Paralisações são sempre vincul
 
 ### `:Comunicacao`
 
-Toda comunicação formal da obra: cartas ao cliente, notificações e atas de reunião. É a entidade que conecta o dado quantitativo do RDO Web ao registro qualitativo contratual.
+Toda comunicação formal da obra. É a entidade que conecta o dado quantitativo do RDO Web ao registro qualitativo contratual, permitindo que um pleito cite tanto as horas perdidas quanto o documento que notificou o cliente sobre aquele evento.
 
 | Campo | Descrição |
 |---|---|
@@ -189,66 +183,40 @@ Toda comunicação formal da obra: cartas ao cliente, notificações e atas de r
 | `trecho_relevante` | Trecho extraído pelo LLM que justifica o vínculo com a paralisação |
 | `caminho_doc` | Caminho para o arquivo físico do documento (PDF, digitalização) |
 
-### `:Motivo`
-
-Taxonomia de motivos de paralisação. Permite detectar recorrência e calcular a participação percentual de cada categoria ao longo do tempo.
-
-| Campo | Descrição |
-|---|---|
-| `categoria` | Categoria principal do motivo |
-| `descricao` | Descrição detalhada |
-| `responsabilidade` | `Contratada`, `Cliente` ou `Externo` |
-| `recorrencia` | Contador de ocorrências na obra |
-| `horas_acumuladas` | Total de horas perdidas por este motivo na obra |
-
-### `:Periodo`
-
-Agrupa paralisações por recorte temporal, permitindo quantificação por semana, mês ou fase contratual.
-
-| Campo | Descrição |
-|---|---|
-| `tipo` | `semana`, `mes`, `fase_contratual` |
-| `data_inicio` | Início do período |
-| `data_fim` | Fim do período |
-| `horas_total` | Total de horas de paralisação no período |
-| `count` | Número de eventos de paralisação no período |
-
 ---
 
 ## Relações entre entidades
 
 | Relação | De → Para | Propriedades |
 |---|---|---|
-| `TEM_PARALISACAO` | Obra → Paralisacao | `horas`, `horas_acumuladas` |
+| `TEM_PARALISACAO` | Obra → Paralisacao | `horas`, `horas_acumuladas_motivo` |
 | `IMPACTADA_POR` | Atividade → Paralisacao | — |
 | `REFERENCIA` | Comunicacao → Paralisacao | `trecho_relevante` |
-| `CLASSIFICA` | Motivo → Paralisacao | — |
-| `OCORREU_EM` | Paralisacao → Periodo | `valid_from`, `valid_until` |
 | `PERTENCE_A` | Atividade → Obra | — |
 | `ASSOCIADA_A` | Comunicacao → Atividade | `data`, `tipo` |
+
+A temporalidade do Graphiti está nas arestas `TEM_PARALISACAO` via `valid_from` e `valid_until` — quando o status de uma paralisação muda, a aresta anterior é preservada com seu timestamp e uma nova é criada, mantendo o histórico completo da obra sem perda de rastreabilidade.
 
 ---
 
 ## Como o impacto é medido
 
-O impacto de uma paralisação é medido em **horas absolutas**, não em percentual. Essa decisão tem três razões práticas:
+O impacto é medido em **horas absolutas**. Essa decisão tem três razões práticas: as horas já existem no RDO Web, são o dado mais confiável disponível desde o início; são diretamente auditáveis, pois o argumento de pleito aponta para o registro específico que originou aquele número; e o percentual pode ser calculado em cima delas quando necessário, sem precisar ser armazenado.
 
-A primeira é que as horas já existem no RDO Web — são o dado mais estruturado e confiável disponível desde o início. A segunda é que horas são diretamente auditáveis: o argumento de pleito aponta para o registro específico do RDO Web que originou aquele número, sem margem para contestação. A terceira é que o percentual pode ser calculado em cima das horas quando necessário — horas perdidas divididas pelas horas previstas no período — mas depende do efetivo previsto estar corretamente preenchido, o que será validado ao longo do projeto.
+Na prática, o grafo mantém dois níveis de granularidade:
 
-Na prática, o grafo armazena dois campos de horas que servem a propósitos distintos:
+**`horas`** em `:Paralisacao` — o dado atômico de cada evento, rastreável até o registro individual do RDO Web.
 
-**`horas`** na aresta `TEM_PARALISACAO` — as horas de um evento específico de paralisação. É o dado atômico, rastreável até o registro individual do RDO Web.
+**`horas_acumuladas_motivo`** na aresta `TEM_PARALISACAO` — a soma de todas as horas perdidas por aquela categoria de paralisação na obra até o momento. É o número que alimenta o argumento de pleito: "foram X horas perdidas por atraso de aprovação do cliente no período de Y a Z."
 
-**`horas_acumuladas`** no nó `:Motivo` — a soma de todas as horas perdidas por aquele motivo ao longo da obra. É o dado agregado que alimenta o argumento de pleito: "foram X horas perdidas por atraso de aprovação do cliente no período de Y a Z."
-
-O `:Periodo` também armazena `horas_total`, que é a soma de todas as paralisações naquele recorte temporal, independente do motivo — útil para comparações entre fases da obra.
+Agregações por período (semana, mês, fase contratual) são calculadas via query sobre os campos `data_inicio` e `data_fim` de `:Paralisacao`, sem necessidade de um nó dedicado para isso.
 
 ---
 
 ## Output
 
-**Levantamento de Paralisações** — classificação automática por motivo, frequência e horas perdidas, segmentada por semana, mês ou fase contratual. Base auditável para pleitos com rastreabilidade direta ao RDO Web.
+**Levantamento de Paralisações** — classificação automática por categoria e responsabilidade, com total de horas por período calculado via query. Base auditável para pleitos com rastreabilidade direta ao RDO Web.
 
-**Narrativa Argumentativa** — o LLM cruza os dados quantitativos das paralisações com as comunicações formais associadas e gera um rascunho de argumentação de pleito: cronologia dos fatos, responsabilidades, horas acumuladas por motivo e referências documentais. O que levava semanas de levantamento manual passa a levar horas.
+**Narrativa Argumentativa** — o LLM cruza os dados quantitativos das paralisações com as comunicações formais associadas e gera um rascunho de argumentação de pleito: cronologia dos fatos, responsabilidades, horas acumuladas por categoria e referências documentais. O que levava semanas de levantamento manual passa a levar horas.
 
-**Alertas de Padrão** — quando um motivo de paralisação acumula recorrência acima de um threshold configurável, o sistema emite um alerta para que a equipe tome ação preventiva antes que o impacto se torne irreversível no cronograma.
+**Alertas de Padrão** — quando uma categoria de paralisação acumula recorrência acima de um threshold configurável, o sistema emite um alerta para que a equipe tome ação preventiva antes que o impacto se torne irreversível no cronograma.
