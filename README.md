@@ -52,8 +52,7 @@ flowchart TD
             LLM -->|nao| CRIAR
             CRIAR -->|sim| E1
             CRIAR -->|nao| DESCARTE[["descartado"]]
-            KG -->|consulta| LLM
-            LLM -->|atualiza| KG
+            KG -.->|consulta e atualiza| LLM
         end
 
         P1 -->|hash do conteudo| P2
